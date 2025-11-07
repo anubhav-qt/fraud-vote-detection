@@ -1,0 +1,7 @@
+data/
+output/
+src/data/
+.ipynb_checkpoints
+/credentials
+src/.ipynb_checkpoints
+src/__pycache__
