@@ -209,30 +209,104 @@ class DuplicateDetectorFinal:
 
         return fakes_scenario_2
 
-    def detect_all_frauds(self):
-        """Run all fraud detection scenarios"""
+    def detect_address_anomalies(self, suspicious_threshold=30):
+        """
+        SCENARIO 3: ADDRESS ANOMALIES
+
+        Flag if too many voters share the same house number.
+
+        Thresholds:
+        - 10-20 voters: Normal (joint family)
+        - 20-30 voters: Slightly suspicious (flag for review)
+        - 30+ voters: HIGHLY SUSPICIOUS (likely fraud operation)
+        """
         print("\n" + "="*70)
-        print("RUNNING FRAUD DETECTION ON ALL SCENARIOS")
+        print("SCENARIO 3: ADDRESS ANOMALY DETECTION")
+        print("="*70)
+        print(f"Rule: {suspicious_threshold}+ voters at same address = SUSPICIOUS\n")
+
+        anomalies = []
+
+        # Filter out records with missing house numbers
+        df_with_house = self.df[self.df['house_number'].notna()].copy()
+
+        if len(df_with_house) == 0:
+            print("⚠ No house numbers available for analysis\n")
+            return anomalies
+
+        # Count voters per house
+        house_counts = df_with_house.groupby('house_number').size().reset_index(name='voter_count')
+
+        # Find suspicious addresses
+        suspicious_houses = house_counts[house_counts['voter_count'] >= suspicious_threshold]
+
+        print(f"Total unique addresses: {len(house_counts)}")
+        print(f"Suspicious addresses (30+ voters): {len(suspicious_houses)}\n")
+
+        for _, house in suspicious_houses.iterrows():
+            house_num = house['house_number']
+            count = house['voter_count']
+
+            # Get all voters at this address
+            voters_at_address = df_with_house[df_with_house['house_number'] == house_num]
+
+            # Check for additional red flags
+            unique_names = voters_at_address['name'].nunique()
+            unique_fathers = voters_at_address['father_husband_name'].nunique()
+
+            # Calculate suspicion level
+            if count >= 50:
+                risk_level = "CRITICAL"
+            elif count >= 40:
+                risk_level = "HIGH"
+            else:
+                risk_level = "MEDIUM"
+
+            anomalies.append({
+                'fraud_type': 'ADDRESS_ANOMALY',
+                'house_number': house_num,
+                'voter_count': count,
+                'unique_names': unique_names,
+                'unique_fathers': unique_fathers,
+                'risk_level': risk_level,
+                'cards': ', '.join(voters_at_address['card_id'].tolist()[:10]) + '...',  # First 10 cards
+                'likelihood': f'{count} voters at one address - Likely fake voter operation'
+            })
+
+            print(f"  ⚠ House {house_num}: {count} voters")
+            print(f"      Unique names: {unique_names}, Unique fathers: {unique_fathers}")
+            print(f"      Risk: {risk_level}\n")
+
+        print(f"✓ Found {len(anomalies)} suspicious addresses\n")
+        return anomalies
+
+    def detect_all_frauds(self):
+        """Run all fraud detection scenarios including address anomalies"""
+        print("\n" + "="*70)
+        print("COMPREHENSIVE FRAUD DETECTION")
         print("="*70 + "\n")
 
-        # Detect scenario 1: Fake details
+        # Scenario 1: Duplicate details
         scenario_1 = self.detect_scenario_1_fake_details()
 
-        # Detect scenario 2: Fake face
+        # Scenario 2: Duplicate faces
         scenario_2 = self.detect_scenario_2_fake_face()
 
-        # Combine results
-        all_frauds = scenario_1 + scenario_2
+        # Scenario 3: Address anomalies (NEW)
+        scenario_3 = self.detect_address_anomalies(suspicious_threshold=30)
+
+        # Combine all frauds
+        all_frauds = scenario_1 + scenario_2 + scenario_3
 
         # Print summary
         print("="*70)
         print("FRAUD DETECTION SUMMARY")
         print("="*70)
-        print(f"\nScenario 1 (Fake Details):  {len(scenario_1)} frauds detected")
-        print(f"Scenario 2 (Fake Face):     {len(scenario_2)} frauds detected")
+        print(f"\nScenario 1 (Duplicate Details):  {len(scenario_1)}")
+        print(f"Scenario 2 (Duplicate Face):     {len(scenario_2)}")
+        print(f"Scenario 3 (Address Anomalies):  {len(scenario_3)}")
         print(f"\n{'─'*70}")
-        print(f"TOTAL FRAUDS DETECTED:      {len(all_frauds)}")
-        print(f"LEGITIMATE VOTERS:          {len(self.df) - len(all_frauds)}")
+        print(f"TOTAL FRAUDS DETECTED:           {len(all_frauds)}")
         print("="*70 + "\n")
 
         if all_frauds:
@@ -288,6 +362,22 @@ class DuplicateDetectorFinal:
                 print(f"    Face Similarity: {row['face_similarity_percent']}%")
                 print(f"    Confidence Score: {row['confidence_score']}%")
                 print(f"    Evidence: {row['details_evidence']}")
+                print(f"    Assessment: {row['likelihood']}")
+
+        # Scenario 3: Address anomalies
+        scenario_3 = frauds_df[frauds_df['fraud_type'] == 'ADDRESS_ANOMALY']
+        if not scenario_3.empty:
+            print("\n\n🚨 SCENARIO 3: ADDRESS ANOMALIES (Suspicious Addresses)")
+            print("   Too many voters at same address\n")
+            print("─" * 70)
+            for idx, row in scenario_3.iterrows():
+                print(f"\n  ANOMALY #{idx+1}:")
+                print(f"    House Number: {row['house_number']}")
+                print(f"    Total Voters: {row['voter_count']}")
+                print(f"    Unique Names: {row['unique_names']}")
+                print(f"    Unique Fathers: {row['unique_fathers']}")
+                print(f"    Risk Level: {row['risk_level']}")
+                print(f"    Sample Cards: {row['cards']}")
                 print(f"    Assessment: {row['likelihood']}")
 
         print("\n" + "="*70 + "\n")
