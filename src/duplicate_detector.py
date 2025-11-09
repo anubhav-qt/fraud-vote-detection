@@ -3,6 +3,8 @@ import numpy as np
 import json
 import face_recognition
 from pathlib import Path
+import imagehash
+from PIL import Image
 
 class DuplicateDetectorFinal:
     def __init__(self, data_csv="data/processed/voter_data_google_vision.csv"):
@@ -128,24 +130,26 @@ class DuplicateDetectorFinal:
 
     def detect_scenario_2_fake_face(self):
         """
-        SCENARIO 2: FAKE FACE DETECTION (With Evidence Scoring)
+        SCENARIO 2: FAKE FACE DETECTION (With Evidence Scoring and Debug)
 
         Detection Logic:
-        - Face similarity >= 90% = SAME PERSON
-        - Base confidence: 90% (from face match)
+        - Face similarity >= 80% = SAME PERSON (lowered from 90% for low-quality images)
+        - Base confidence: similarity percentage (from face match)
         - Add evidence from details:
           - If names are DIFFERENT: +5% (SUPER SUSPICIOUS - same face, different name)
           - If names are SAME: -5% (less suspicious, could be legitimate)
 
         Why this works:
-        - You can't fake a face, so 90%+ match = definitely same person
+        - You can't fake a face, so 80%+ match = likely same person
+        - Lower threshold helps catch duplicates in low-quality voter card photos
         - If they also have different names, they're committing fraud
         - If they have same name too, might be data entry error (less priority)
         """
         print("="*70)
-        print("SCENARIO 2: FAKE FACE DETECTION (90%+ Similarity)")
+        print("SCENARIO 2: FAKE FACE DETECTION (80%+ Similarity)")
         print("="*70)
-        print("Rule: Face similarity >= 90% = SAME PERSON = FAKE\n")
+        print("Rule: Face similarity >= 80% = SAME PERSON = FAKE")
+        print("(Lowered threshold from 90% to handle low-quality images)\n")
 
         fakes_scenario_2 = []
 
@@ -157,7 +161,11 @@ class DuplicateDetectorFinal:
             print(f"⚠ Not enough faces ({len(encodings)}) to compare\n")
             return fakes_scenario_2
 
-        print(f"Comparing {len(encodings)} faces for 90%+ matches...\n")
+        print(f"Comparing {len(encodings)} faces...")
+        print(f"DEBUG: Testing first 3 face pairs with distances:\n")
+
+        # DEBUG: Show first few comparisons
+        debug_count = 0
 
         for i in range(len(encodings)):
             for j in range(i + 1, len(encodings)):
@@ -165,8 +173,18 @@ class DuplicateDetectorFinal:
                 distance = face_recognition.face_distance([encodings[i]], encodings[j])[0]
                 similarity_percent = (1 - distance) * 100
 
-                # Threshold: 90% or higher
-                if similarity_percent < 90.0:
+                # DEBUG: Print first 3 comparisons
+                if debug_count < 3:
+                    card_1 = faces_df.iloc[i]['card_id']
+                    card_2 = faces_df.iloc[j]['card_id']
+                    print(f"  {card_1} <-> {card_2}")
+                    print(f"    Distance: {distance:.4f}")
+                    print(f"    Similarity: {similarity_percent:.2f}%")
+                    print()
+                    debug_count += 1
+
+                # Lower threshold to 80% to catch more (changed from 90%)
+                if similarity_percent < 80.0:
                     continue
 
                 row1 = faces_df.iloc[i]
@@ -205,9 +223,89 @@ class DuplicateDetectorFinal:
                     'likelihood': likelihood
                 })
 
-        print(f"✓ Found {len(fakes_scenario_2)} fake voters with identical faces\n")
+        print(f"\n✓ Found {len(fakes_scenario_2)} fake voters with 80%+ face match\n")
 
         return fakes_scenario_2
+
+    def detect_exact_duplicate_photos(self):
+        """
+        SCENARIO 2B: EXACT DUPLICATE PHOTOS (using perceptual hashing)
+
+        This catches:
+        - Exact same photo used twice
+        - Same photo with slight brightness/crop differences
+        - Works even if face_recognition fails
+
+        Uses perceptual hashing which is robust to:
+        - Quality differences
+        - Slight color/brightness variations
+        - Minor cropping
+        """
+        print("\n" + "="*70)
+        print("SCENARIO 2B: EXACT DUPLICATE PHOTO DETECTION")
+        print("="*70)
+        print("Rule: Perceptual hash similarity = EXACT SAME PHOTO\n")
+
+        duplicates = []
+
+        # Get all cards with face photos
+        cards_with_faces = self.df[self.df['face_path'].notna()].copy()
+
+        if len(cards_with_faces) < 2:
+            print("⚠ Not enough face photos to compare\n")
+            return duplicates
+
+        print(f"Computing image hashes for {len(cards_with_faces)} photos...\n")
+
+        # Compute perceptual hash for each face photo
+        hashes = []
+        for idx, row in cards_with_faces.iterrows():
+            try:
+                img = Image.open(row['face_path'])
+                # Use average hash (fast, works for exact duplicates)
+                img_hash = imagehash.average_hash(img, hash_size=16)
+                hashes.append((row['card_id'], img_hash, row))
+            except Exception as e:
+                print(f"⚠ Failed to hash {row['card_id']}: {str(e)}")
+                continue
+
+        print(f"Successfully hashed {len(hashes)} photos")
+        print(f"Comparing hashes for duplicates...\n")
+
+        # Compare all hash pairs
+        for i in range(len(hashes)):
+            for j in range(i + 1, len(hashes)):
+                card_1, hash_1, row_1 = hashes[i]
+                card_2, hash_2, row_2 = hashes[j]
+
+                # Hamming distance between hashes (0 = identical)
+                hash_diff = hash_1 - hash_2
+
+                # Threshold: 0-5 = exact duplicate, 5-10 = very similar
+                if hash_diff <= 10:
+                    similarity_percent = (1 - hash_diff / 64) * 100
+
+                    # Determine likelihood based on hash difference
+                    if hash_diff <= 5:
+                        likelihood = '🚨 EXACT SAME PHOTO - DEFINITE FRAUD'
+                    else:
+                        likelihood = 'VERY SIMILAR PHOTO - LIKELY FRAUD'
+
+                    duplicates.append({
+                        'fraud_type': 'DUPLICATE_PHOTO',
+                        'card_1': card_1,
+                        'card_2': card_2,
+                        'name_1': row_1['name'] if pd.notna(row_1['name']) else 'N/A',
+                        'name_2': row_2['name'] if pd.notna(row_2['name']) else 'N/A',
+                        'father_1': row_1['father_husband_name'] if pd.notna(row_1['father_husband_name']) else 'N/A',
+                        'father_2': row_2['father_husband_name'] if pd.notna(row_2['father_husband_name']) else 'N/A',
+                        'photo_similarity': round(similarity_percent, 2),
+                        'hash_difference': hash_diff,
+                        'likelihood': likelihood
+                    })
+
+        print(f"✓ Found {len(duplicates)} duplicate photos\n")
+        return duplicates
 
     def detect_address_anomalies(self, suspicious_threshold=30):
         """
@@ -281,7 +379,7 @@ class DuplicateDetectorFinal:
         return anomalies
 
     def detect_all_frauds(self):
-        """Run all fraud detection scenarios including address anomalies"""
+        """Run all fraud detection scenarios including address anomalies and duplicate photos"""
         print("\n" + "="*70)
         print("COMPREHENSIVE FRAUD DETECTION")
         print("="*70 + "\n")
@@ -289,14 +387,17 @@ class DuplicateDetectorFinal:
         # Scenario 1: Duplicate details
         scenario_1 = self.detect_scenario_1_fake_details()
 
-        # Scenario 2: Duplicate faces
+        # Scenario 2: Duplicate faces (facial recognition)
         scenario_2 = self.detect_scenario_2_fake_face()
+
+        # Scenario 2B: Exact duplicate photos (perceptual hashing)
+        scenario_2b = self.detect_exact_duplicate_photos()
 
         # Scenario 3: Address anomalies (NEW)
         scenario_3 = self.detect_address_anomalies(suspicious_threshold=30)
 
         # Combine all frauds
-        all_frauds = scenario_1 + scenario_2 + scenario_3
+        all_frauds = scenario_1 + scenario_2 + scenario_2b + scenario_3
 
         # Print summary
         print("="*70)
@@ -304,6 +405,7 @@ class DuplicateDetectorFinal:
         print("="*70)
         print(f"\nScenario 1 (Duplicate Details):  {len(scenario_1)}")
         print(f"Scenario 2 (Duplicate Face):     {len(scenario_2)}")
+        print(f"Scenario 2B (Duplicate Photo):   {len(scenario_2b)}")
         print(f"Scenario 3 (Address Anomalies):  {len(scenario_3)}")
         print(f"\n{'─'*70}")
         print(f"TOTAL FRAUDS DETECTED:           {len(all_frauds)}")
@@ -362,6 +464,20 @@ class DuplicateDetectorFinal:
                 print(f"    Face Similarity: {row['face_similarity_percent']}%")
                 print(f"    Confidence Score: {row['confidence_score']}%")
                 print(f"    Evidence: {row['details_evidence']}")
+                print(f"    Assessment: {row['likelihood']}")
+
+        # Scenario 2B: Duplicate photos
+        scenario_2b = frauds_df[frauds_df['fraud_type'] == 'DUPLICATE_PHOTO']
+        if not scenario_2b.empty:
+            print("\n\n🚨 SCENARIO 2B: DUPLICATE PHOTO (Exact Same Image)")
+            print("   Identical photo used for multiple cards\n")
+            print("─" * 70)
+            for idx, row in scenario_2b.iterrows():
+                print(f"\n  FRAUD #{idx+1}:")
+                print(f"    Card 1: {row['card_1']} - {row['name_1']}")
+                print(f"    Card 2: {row['card_2']} - {row['name_2']}")
+                print(f"    Photo Similarity: {row['photo_similarity']}%")
+                print(f"    Hash Difference: {row['hash_difference']}")
                 print(f"    Assessment: {row['likelihood']}")
 
         # Scenario 3: Address anomalies
