@@ -1,0 +1,18 @@
+# Computer Vision and Image Processing
+opencv-python>=4.8.0
+face-recognition>=1.3.0
+Pillow>=10.0.0
+
+# PDF Processing
+PyMuPDF>=1.23.0
+
+# Google Cloud Vision API
+google-cloud-vision>=3.4.0
+
+# Data Processing and Analysis
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Deep Learning (required by face_recognition)
+dlib>=19.24.0
+cmake>=3.25.0
