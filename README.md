@@ -138,6 +138,7 @@ cd fraud_vote
 
 ```bash
 pip install -r requirements.txt
+pip install https://github.com/omwaman1/dlib/releases/download/dlib/dlib-19.24.99-cp313-cp313-win_amd64.whl
 ```
 
 **Required packages:**
